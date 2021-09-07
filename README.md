@@ -106,7 +106,6 @@ cd ..
     public void onPrePersist() {
         createdAt = new Date();
         modifiedAt = createdAt;
-        status = "paid";
     }
 
     @PreUpdate
@@ -129,7 +128,7 @@ cd ..
 
             }
         ```
-    - receipt의 PolicyHandler.java에서 kafka에 발행된 이벤트를 받아 recepit 생성
+    - receipt의 PolicyHandler.java에서 kafka에 발행된 이벤트를 받아 영수증 생성
         ```java
             final private int DELIVERY_PREPER_DAY = 21;
 
@@ -152,7 +151,11 @@ cd ..
         ```
 
 ## correlation
-- prereservation에 새로운 내용이 추가되면 이후 서비스에서 처리할 이벤트 타입에 해당하는 메세지를를 받아서 처리하고 새로운 이벤트룰 생성한다.
+- prereservation에 새로운 내용이 추가되면 prereservationCreated 이벤트룰 생성한다.
+- prereservation이 생성될 때 payment 서비스에 생성 요청을 보낸다.
+- payment 서비스는 payment가 생성되면 paymentCraeted 이벤트를 생성한다.
+- receipt는 paymentCraeted 이벤트를 받아 receipt를 생성하고 receiptCreated 이벤트를 생성한다.
+- myReservation은 prereservationCreated, paymentCreated, receiptCreated 이벤트를 받아 관련 정보를 업데이트 한다.
 - http로 prereservation에 새로운 내용 추가
     ```bash
     http post localhost:8088/preReservations userId=1 userAddress="seoul" productId=1 productName=fold price=1300000 cardNo="1234-1234-1234-1234" status="order"
@@ -191,7 +194,7 @@ cd ..
 ## saga
 - 특정 마이크로서비스에서의 작업이 실패하면 이전까지의 작업이 완료된 마이크서비스들에게 실패 이벤트를 보내 원자성(atomicity)을 보장하는 패턴
 - 구현내용
-    -  payment에서 작업 중 실패시 prereservation 삭제 및 이후 진행된 내용 삭제
+    -  payment에서 작업 중 실패 시 prereservation 삭제 및 삭제 이벤트를 통해 이후 진행되었던 내용 삭제
         - prereservayion.java
             ```java
                     
@@ -210,8 +213,6 @@ cd ..
                     payment.setProductName(productName);
                     payment.setUserId(userId);
                     PrereservationApplication.applicationContext.getBean(prereservation.external.PaymentService.class).reservationCreated(payment);
-                       
-
             
                 }catch(Exception e){
                     System.out.println("\n\n"+e+"\n\n");
@@ -229,7 +230,7 @@ cd ..
 
             }
             ```
-    - payment 서비스에 장애가 있는 경우
+    - payment 서비스에 장애가 있는 경우에 주고받는 메세지
         - http로 prereservation에 새로운 내용 추가
             ```bash
             http post localhost:8088/preReservations userId=1 userAddress="seoul" productId=1 productName=fold price=1300000 cardNo="1234-1234-1234-1234" status="order"
@@ -240,7 +241,7 @@ cd ..
             $kafka_home/bin/kafka-console-consumer.sh --bootstrap-server 127.0.0.1:9092 --topic prereservation
             ```
             ![image](https://user-images.githubusercontent.com/53825723/132290295-0f410505-5cfd-4ea2-89c2-4657cfc34490.png)
-        - myreservation(CQRS)가 가지고 있는 정보
+        - myreservation(CQRS) 조회
             ```
             http localhost:8088/myReservations
             ```
@@ -333,7 +334,7 @@ cd ..
         - 지정한 fallback 메서드가 실행되는 것을 볼 수 있다.
 ## gateway
 - gateway는 gateway로 들어오는 요청을 path에 따라 특정 서비스로 보내는 역할을 한다.
-- 즉, 하나의 주소로 서비스들을 사용할 수 있게 해준다.
+- 즉, 사용자는 하나의 주소로 서비스들을 사용할 수 있게 해준다.
 - application.yaml
     ```yaml
     spring:
@@ -365,6 +366,7 @@ cd ..
                 <artifactId>spring-cloud-starter-gateway</artifactId>
             </dependency>
     ```
+- `http://localhost:8088/payments/` 으로 요청하면 `http://localhost:8081/payments/` 으로 요청을 보내고 `http://localhost:8088/preReservations/`으로 요청을 보내면 `http://localhost:8082/preReservations/`으로 요청을 보낸다.
 
 # 운영
 ## kafka
@@ -393,13 +395,13 @@ cd ..
     - 수정 전
         ```yaml
                 - name: payment
-                image: username/payment:latest
+                  image: username/payment:latest
         ```
     - 수정 후
         ```yaml
                 - name: payment
-                image: <ACR_NAME>.auzrecr,io/payment:latest
-                imagePullPolicy: Always
+                  image: <ACR_NAME>.auzrecr,io/payment:latest
+                  imagePullPolicy: Always
         ```
 
 - FeignClient URL 매개변수화
@@ -614,8 +616,8 @@ cd ..
     - 시간이 오래 걸리면 회로가 차단되는 것을 볼 수 있다.
 
 ## Autoscale (HPA)
-- 일정시간 동안 특정 Pod에 요청이 많이 생겨 할당된 리소스를 많이 사용할 경우 Pod의 수를 늘려 요청을 분산할 수 있다.
-- kubernetes의 HPA는 pod를 모니터링 하고 설정된 리소스가 한계치를 넘어 일정시간 유지되면 Pod의 수를 늘린다.
+- 일정시간 동안 특정 Pod에 요청이 많이 발생해 과부화가 생기는 경우 Pod의 수를 늘려 요청을 분산할 수 있다.
+- kubernetes의 HPA는 pod를 모니터링 하고 설정된 리소스가 기준을 넘어서 일정시간 유지되면 Pod의 수를 늘린다.
 - HPA 적용
     - prereservation의 Deployment에 리소스 기준 생성
         - 최대 CPU : 500m, 최소 CPU : 200m 
