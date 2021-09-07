@@ -183,7 +183,13 @@ cd ..
     ![image](https://user-images.githubusercontent.com/53825723/132288841-97186ea7-bc65-4a4e-a66a-575611c7c54c.png)
 
 - prereservation에 예약 내역이 추가되면 서비스들끼리 이벤트를 주고받으면서 payment, receipt 정보가 생성되고 myReservation에서 모든 정보를 확인 할 수 있는 것을 볼 수 있다.
-
+- status
+    - reservated : prereservation에 예약이 추가된 상태
+    - reservation_cancelled : prereservation에서 예약이 삭제된 상태
+    - paid : payment에 결제정보가 추가된 상태
+    - payment_cancelled : payment에서 결제정보가 삭제된 상태
+    - receipt_issued : receipt에 영수증 정보가 추가된 상태
+    - receipt_cancelled : receipt에서 영수증 정보가 삭제된 상태
 ## CQRS
 - CQRS는 명령 조회 책임 분리를 의미한다.
 - myreservation(CQRS) 조회
@@ -496,6 +502,16 @@ cd ..
         http 20.200.200.225:8080/myReservations
         ```
         ![image](https://user-images.githubusercontent.com/53825723/132299202-e3259409-90a8-467c-b31a-ea5e7210273e.png)
+    - http로 prereservation에 새로운 내용 삭제
+        ```
+        http delete 20.200.200.225:8080/preReservations/1
+        ```
+        ![image](https://user-images.githubusercontent.com/53825723/132373957-a9d8991b-c58a-4c69-ac47-213fc5fd4e60.png)
+    - myreservation(CQRS) 조회
+        ```
+        http 20.200.200.225:8080/myReservations
+        ```
+        ![image](https://user-images.githubusercontent.com/53825723/132374048-2aee4ac2-bd35-4103-9c77-9d7c3fe6520f.png)
 
 ## configMap
 - prereservation에 configMap을 사용하여 활성 프로파일을 설정한다.
