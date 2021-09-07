@@ -28,12 +28,29 @@
 - prereservation : 사용자의 사전 예약을 처리한다.
 - payment : 사용자의 결제를 처리한다.
 - receipt : 영수증을 발행한다.
-- myreservation : 사용자의 예약 정보를 모두 포함한다.
+- myreservation : 사용자의 예약 정보를 저장한다.
 
 ## Hexagonal Architecture
 ![image](https://user-images.githubusercontent.com/53825723/132273298-c2730168-9476-4b7b-8122-a3b4a72e98b1.png)
 - 내부 로직 변화 없이 Database 변경이 가능하다.
-- 다른 서비스와 상관없이 다른 Database를 사용할 수 있다. (Polyglot)
+    - h2 사용시 pom.xml
+        ```xml
+        <dependency>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+        ```
+    - hsqldb 사용시 pom.xml
+        ```xml
+		<dependency>
+			<groupId>org.hsqldb</groupId>
+			<artifactId>hsqldb</artifactId>
+			<version>2.4.1</version>
+			<scope>runtime</scope>
+		</dependency>
+        ```
+- 다른 서비스와 상관없이 다른 Database를 사용할 수 있다. (**Polyglot**)
 
 # 개발환경 구성
 - Container Registry : Azure Container Registry
@@ -82,6 +99,58 @@ cd myreservation
 mvn spring-boot:run
 cd ..
 ```
+## 서비스 공통 구현
+- 각 서비스에서 데이터가 생성되거나 변경될 때 관련 정보를 업데이트 한다.
+```java
+    @PrePersist
+    public void onPrePersist() {
+        createdAt = new Date();
+        modifiedAt = createdAt;
+        status = "paid";
+    }
+
+    @PreUpdate
+    public void onPreUpdate() {
+        modifiedAt = new Date();
+    }
+
+```
+## event-driven
+- 데이터가 변경되면 kafka에 메세지를 게시한다.
+- 다른 서비스를 kafka의 메세지를 받아 관련 로직을 처리한다.
+- payment 생성과 이와 관련된 receipt 생성
+    - payment 서비스의 payment.java에서 이벤트 발행
+        ```java
+            @PostPersist
+            public void onPostPersist(){
+                PaymentCreated paymentCreated = new PaymentCreated();
+                BeanUtils.copyProperties(this, paymentCreated);
+                paymentCreated.publishAfterCommit();
+
+            }
+        ```
+    - receipt의 PolicyHandler.java에서 kafka에 발행된 이벤트를 받아 recepit 생성
+        ```java
+            final private int DELIVERY_PREPER_DAY = 21;
+
+            @StreamListener(KafkaProcessor.INPUT)
+            public void wheneverPaymentCreated_PaymentCreated(@Payload PaymentCreated paymentCreated){
+
+                if(!paymentCreated.validate()) return;
+
+                System.out.println("\n\n##### listener PaymentCreated : " + paymentCreated.toJson() + "\n\n");
+
+                Date expectedDeliveryAt = new Date();
+                expectedDeliveryAt.setDate(paymentCreated.getCreatedAt().getDate() + DELIVERY_PREPER_DAY);
+
+                Receipt receipt = new Receipt();
+                receipt.setExpectedDeliveryAt(expectedDeliveryAt);
+                receipt.setPaidId(paymentCreated.getId());
+                BeanUtils.copyProperties(paymentCreated, receipt);
+                receiptRepository.save(receipt);
+            }
+        ```
+
 ## correlation
 - prereservation에 새로운 내용이 추가되면 이후 서비스에서 처리할 이벤트 타입에 해당하는 메세지를를 받아서 처리하고 새로운 이벤트룰 생성한다.
 - http로 prereservation에 새로운 내용 추가
@@ -427,7 +496,7 @@ cd ..
         ![image](https://user-images.githubusercontent.com/53825723/132299202-e3259409-90a8-467c-b31a-ea5e7210273e.png)
 
 ## configMap
-- prereservation에 환경변수를 사용하여 활성 프로파일을 설정한다.
+- prereservation에 configMap을 사용하여 활성 프로파일을 설정한다.
 - dockerfile 수정
     ```dockerfile
     FROM openjdk:8u212-jdk-alpine
@@ -435,7 +504,7 @@ cd ..
     EXPOSE 8080
     ENTRYPOINT ["java","-Xmx400M","-Djava.security.egd=file:/dev/./urandom","-jar","/app.jar","--spring.profiles.active=${PROFILE}"]
     ```
-- 환경변수 생성
+- configMap 생성
     ```bash
     kubectl create configmap profile-cm --from-literal=profile=docker
     ```
@@ -486,21 +555,105 @@ cd ..
     ```bash
     kubectl apply -f siege.yaml
     ```
+- siege pod 배포 확인
+    ```
+    kubectl get pod siege
+    ```
+    ![image](https://user-images.githubusercontent.com/53825723/132304430-c976de45-b610-4ad2-8495-d4d137303619.png)
 - siege 접속
     ```
     kubectl exec -it pod/siege -c siege -- /bin/bash
     ```
-- siege 사용법 예 (myreservation에 워크로드를 1000명, 1분간 걸어준다.)
+- siege 사용법 예시 (myreservation에 워크로드를 1000명, 1분간 걸어준다.)
     ```
     siege -c1000 -t60S  -v http://myreservation:8080/myReservations
     ```
 ## circuit breaker
+- 클라이언트에서 원격 서버로 요청을 전송할 때 특정 임계치(threshold)를 넘어서면, 원격 서버에 문제가 있다고 판단하여 빠르게 에러를 발생시키는 방법 (Fail-Fast)
 - 일정시간 동안 특정 마이크로 서비스에 대한 요청이 많이 생기면 서비스가 다운될 수 있다.
-- 이를 방지하기 위해 다운 되기 전 요청을 차단한다. (Fail-Fast)
+- 이를 방지하기 위해 다운 되기 전 요청을 차단한다. 
+- circuit breaker 설정
+    - payment 서비스와 req/res 요청을 하는 prereservation에 타임 아웃 설정을 추가한다. ( 1500 밀리 초 )
+        - application.yaml
+            ```yaml 
+            hystrix:
+                command:
+                    default:
+                        execution:
+                            isolation:
+                                thread:
+                                    timeoutInMilliseconds: 620
+            ```
+    - payment 서비스의 응답이 1초 이상 걸린다고 가정하고 코드를 수정한다.
+        - Payment.java
+            ```java
+                @PostPersist
+                public void onPostPersist(){
+                    try {
+                        Thread.sleep((long) (400 + Math.random() * 220));
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+
+                    PaymentCreated paymentCreated = new PaymentCreated();
+                    BeanUtils.copyProperties(this, paymentCreated);
+                    paymentCreated.publishAfterCommit();
+                }
+            ```
+    - 재배포 후 siege에서 부하 테스트를 진행한다.
+        ```bash
+        kubectl exec -it pod/siege -c siege -- /bin/bash
+        siege -c2 -t60S -v  --content-type "application/json" 'http://prereservation:8080/preReservations POST {"userId":1}'
+        ```
+        ![image](https://user-images.githubusercontent.com/53825723/132346929-66eef274-db77-4332-8526-923d0c471c8b.png)
+    - prereservation 서비스 로그 확인
+        ```
+        kubectl log prereservation-6c7c5855d4-xsn69
+        ```
+        ![image](https://user-images.githubusercontent.com/53825723/132345636-a9262a9f-5941-4458-9972-255a5f32f2f6.png)
+    - 시간이 오래 걸리면 회로가 차단되는 것을 볼 수 있다.
 
 ## Autoscale (HPA)
 - 일정시간 동안 특정 Pod에 요청이 많이 생겨 할당된 리소스를 많이 사용할 경우 Pod의 수를 늘려 요청을 분산할 수 있다.
 - kubernetes의 HPA는 pod를 모니터링 하고 설정된 리소스가 한계치를 넘어 일정시간 유지되면 Pod의 수를 늘린다.
+- HPA 적용
+    - prereservation의 Deployment에 리소스 기준 생성
+        - 최대 CPU : 500m, 최소 CPU : 200m 
+        ```
+            imagePullPolicy: Always
+            resources:
+                limits:
+                    cpu: 500m
+                requests:
+                    cpu: 200m
+        ```
+    - HPA 생성
+        - prereservation의 replica를 동적으로 늘려주도록 HPA 를 설정한다. 
+        - 아래 설정은 CPU 사용량이 15프로를 넘어서면 replica 를 10개까지 늘려준다
+        ```
+        kubectl autoscale deployment prereservation --cpu-percent=15 --min=1 --max=10
+        ```
+        ```
+        kubectl get hpa
+        ```
+        ![image](https://user-images.githubusercontent.com/53825723/132349467-082798a3-00f1-41c2-9dbc-127687de326c.png)
+    - siege로 부하 테스트
+        ```bash
+        kubectl exec -it pod/siege -c siege -- /bin/bash
+        siege -c2 -t60S -v  --content-type "application/json" 'http://prereservation:8080/preReservations POST {"userId":1}'
+        ```
+    - Pod 수 변화
+        - 부하 테스트 전
+            ```
+            kubectl get deploy prereservation -w
+            ```
+            ![image](https://user-images.githubusercontent.com/53825723/132349579-939a973c-c70a-4395-b0a4-c2ec78e9d295.png)
+        - 부하 테스트 후
+            ![image](https://user-images.githubusercontent.com/53825723/132349762-dd0d3995-3a7d-4600-b024-4650cf98238d.png)
+        - 다음 명령어로도 실시간으로 변하는 것을 확인할 수 있다.
+            ```
+            watch kubectl get pod
+            ```
 
 ## Zero-downtime deploy (readiness probe)
 - 서비스가 실행된 후 사용자에게 기능을 제공하기까지 시간이 걸릴 수 있다.
@@ -508,18 +661,74 @@ cd ..
 - 기존 Pod는 삭제된다.
 - pod는 준비가 되지 않은 상태로 사용자의 요청을 받을 수 있다.
 - 이는 재배포 시 사용자 입장에서 중단이 발생할 수 있음을 의미한다.
-    - Readness 설정 없이 siege로 접속 테스트
+    - Readness 설정 없이 siege로 지속적인 접속 테스트시 재배포
+        - 재배포 명령어
+            ```
+            kubectl rollout restart deployment prereservation  
+            ```
+        - siege로 부하테스트
+            ```
+            kubectl exec -it pod/siege -c siege -- /bin/bash
+            siege -c255 -t30S -v  --content-type "application/json" 'http://prereservation:8080/preReservations POST {"userId":1}'
+            ```
+            ![image](https://user-images.githubusercontent.com/53825723/132357251-d51a721b-6936-4ca0-b706-c26d196205ba.png)
+        - 재배포시 서비스 중단이 발생한다.
+
 
 - 만약 Readiness 설정이 되어 있으면 Kubernetes는 Pod가 사용자의 요청이 준비될 때 까지 기다린 후 Service에 연결한다.
 - 기존 Pod는 새로운 Pod가 준비된 후 삭제된다.
 - 즉, service를 통해 pod로 요청하는 사용자 입장에서는 중단이 발생하지 않는다.
-    - Readinss 설정 후 siege로 접속 테스트
+    - Readinss 설정 후 siege로 지속적인 접속 테스트시 재배포
+        - Readinss 설정
+            ```yaml
+            readinessProbe:
+              httpGet:
+                path: '/actuator/health'
+                port: 8080
+              initialDelaySeconds: 10
+              timeoutSeconds: 2
+              periodSeconds: 5
+              failureThreshold: 10
+            ```
+        - 재배포 명령어
+            ```
+            kubectl rollout restart deployment prereservation  
+            ```
+            ![image](https://user-images.githubusercontent.com/53825723/132354529-71440a29-238a-43f5-85f1-023b5fc06018.png)
+        - siege로 부하테스트
+            ```
+            kubectl exec -it pod/siege -c siege -- /bin/bash
+            siege -c255 -t30S -v  --content-type "application/json" 'http://prereservation:8080/preReservations POST {"userId":1}'     
+            ```
+            ![image](https://user-images.githubusercontent.com/53825723/132356700-ec66c57a-c23e-4976-995c-3cf4e3dd45c6.png)
+        - 재배포시 서비스 중단이 발생하지 않는다.
 
 ## self-healing (liveness probe)
-- 마이크로 서비스가 9090 포트를 통해 기능을 제공한다고 가정
+- 마이크로서비스가 9090 포트를 통해 기능을 제공한다고 가정
 - liveness를 사용해 9090포트가 정상 작동하는지 주기적으로 확인
-- 만약 정상 작동하지 않는다면 pod 재시작
+    ```yaml
+          livenessProbe:
+            httpGet:
+              path: '/actuator/health'
+              port: 9090
+            initialDelaySeconds: 120
+            timeoutSeconds: 2
+            periodSeconds: 5
+            failureThreshold: 5
+    ```
+- 만약 정상 작동하지 않는다면 pod를 재시작한다.
+![image](https://user-images.githubusercontent.com/53825723/132358236-45cb30c9-cf23-403b-82ec-62dfb364d6f4.png)
+    - 9090포트로 통신할 수 없어 계속해서 재시작 하는 모습을 볼 수 있다.
+    - liveness를 사용하지 않는다면, 9090포트가 비정상적으로 작동해도 계속해서 Running 상태이다.
 
-- liveness를 사용하지 않는다면, 9090포트가 비정상적으로 작동해도 계속해서 Running 상태이다.
-
-- 현제 프로젝트에서는 8080 포트를 사용하므로 8080포트에 대한 liveness 설정 추가
+- 현제 프로젝트에서는 8080 포트를 사용하므로 deployment에 8080포트에 대한 liveness 설정을 추가한다.
+    ```yaml
+      livenessProbe:
+        httpGet:
+          path: '/actuator/health'
+          port: 8080
+        initialDelaySeconds: 120
+        timeoutSeconds: 2
+        periodSeconds: 5
+        failureThreshold: 5
+    ```
