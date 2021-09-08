@@ -115,10 +115,10 @@ cd ..
 
 ```
 ## event-driven
-- 데이터가 변경되면 kafka에 메세지를 게시한다.
-- 다른 서비스를 kafka의 메세지를 받아 관련 로직을 처리한다.
+- 한 서비스가 kafka에 이벤트를 게시한다.
+- 다른 서비스가 kafka에서 이벤트를 받아 관련 로직을 처리한다.
 - payment 생성과 이와 관련된 receipt 생성
-    - payment 서비스의 payment.java에서 이벤트 발행
+    - payment 서비스의 `payment.java`에서 이벤트 게시
         ```java
             @PostPersist
             public void onPostPersist(){
@@ -128,7 +128,40 @@ cd ..
 
             }
         ```
-    - receipt의 PolicyHandler.java에서 kafka에 발행된 이벤트를 받아 영수증 생성
+    - 이벤트 게시 로직 (`AbstractEvent.java`)
+        ```java
+            public void publish(String json){
+                if( json != null ){
+
+                    /**
+                     * spring streams 방식
+                     */
+                    KafkaProcessor processor = PaymentApplication.applicationContext.getBean(KafkaProcessor.class);
+                    MessageChannel outputChannel = processor.outboundTopic();
+
+                    outputChannel.send(MessageBuilder
+                            .withPayload(json)
+                            .setHeader(MessageHeaders.CONTENT_TYPE, MimeTypeUtils.APPLICATION_JSON)
+                            .build());
+
+                }
+            }
+
+            public void publish(){
+                this.publish(this.toJson());
+            }
+
+            public void publishAfterCommit(){
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
+
+                    @Override
+                    public void afterCompletion(int status) {
+                        AbstractEvent.this.publish();
+                    }
+                });
+            }
+        ```
+    - receipt의 `PolicyHandler.java`에서 kafka에 발행된 이벤트를 받아 영수증 생성
         ```java
             final private int DELIVERY_PREPER_DAY = 21;
 
@@ -151,11 +184,11 @@ cd ..
         ```
 
 ## correlation
-- prereservation에 새로운 내용이 추가되면 prereservationCreated 이벤트룰 생성한다.
+- prereservation에 새로운 내용이 추가되면 `prereservationCreated` 이벤트룰 생성한다.
 - prereservation이 생성될 때 payment 서비스에 생성 요청을 보낸다.
-- payment 서비스는 payment가 생성되면 paymentCraeted 이벤트를 생성한다.
-- receipt는 paymentCraeted 이벤트를 받아 receipt를 생성하고 receiptCreated 이벤트를 생성한다.
-- myReservation은 prereservationCreated, paymentCreated, receiptCreated 이벤트를 받아 관련 정보를 업데이트 한다.
+- payment 서비스는 payment가 생성되면 `paymentCraeted` 이벤트를 생성한다.
+- receipt는 paymentCraeted 이벤트를 받아 receipt를 생성하고 `receiptCreated` 이벤트를 생성한다.
+- myReservation은 `prereservationCreated`, `paymentCreated`, `receiptCreated` 이벤트를 받아 관련 정보를 업데이트 한다.
 - http로 prereservation에 새로운 내용 추가
     ```bash
     http post localhost:8088/preReservations userId=1 userAddress="seoul" productId=1 productName=fold price=1300000 cardNo="1234-1234-1234-1234" status="order"
