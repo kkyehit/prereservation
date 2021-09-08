@@ -624,7 +624,7 @@ cd ..
 - 일정시간 동안 특정 마이크로 서비스에 대한 요청이 많이 생기면 서비스가 다운될 수 있다.
 - 이를 방지하기 위해 다운 되기 전 요청을 차단한다. 
 - circuit breaker 설정
-    - payment 서비스와 req/res 요청을 하는 prereservation에 타임 아웃 설정을 추가한다. ( 1500 밀리 초 )
+    - payment 서비스와 req/res 요청을 하는 prereservation에 타임 아웃 설정을 추가한다. ( 620 밀리 초 )
         - application.yaml
             ```yaml 
             hystrix:
@@ -635,7 +635,7 @@ cd ..
                                 thread:
                                     timeoutInMilliseconds: 620
             ```
-    - payment 서비스의 응답이 1초 이상 걸린다고 가정하고 코드를 수정한다.
+    - payment 서비스의 응답에 지연을 주도록 수정한다.
         - Payment.java
             ```java
                 @PostPersist
@@ -662,7 +662,7 @@ cd ..
         kubectl log prereservation-6c7c5855d4-xsn69
         ```
         ![image](https://user-images.githubusercontent.com/53825723/132345636-a9262a9f-5941-4458-9972-255a5f32f2f6.png)
-    - 시간이 오래 걸리면 회로가 차단되는 것을 볼 수 있다.
+    - 시간이 오래 걸리면 회로가 차단되고 fallback 메서드가 실행되는 것을 볼 수 있다.
 
 ## Autoscale (HPA)
 - 일정시간 동안 특정 Pod에 요청이 많이 발생해 과부화가 생기는 경우 Pod의 수를 늘려 요청을 분산할 수 있다.
@@ -712,7 +712,7 @@ cd ..
 - 기존 Pod는 삭제된다.
 - pod는 준비가 되지 않은 상태로 사용자의 요청을 받을 수 있다.
 - 이는 재배포 시 사용자 입장에서 중단이 발생할 수 있음을 의미한다.
-    - Readness 설정 없이 siege로 지속적인 접속 테스트시 재배포
+    - Readiness 설정 없이 siege로 지속적인 접속 테스트시 재배포
         - 재배포 명령어
             ```
             kubectl rollout restart deployment prereservation  
@@ -726,7 +726,7 @@ cd ..
         - 재배포시 서비스 중단이 발생한다.
 
 
-- 만약 Readiness 설정이 되어 있으면 Kubernetes는 Pod가 사용자의 요청이 준비될 때 까지 기다린 후 Service에 연결한다.
+- 만약 Readiness 설정이 되어 있으면 Kubernetes는 Pod가 사용자의 요청을 받을 준비가 될 때까지 기다린 후 Service에 연결한다.
 - 기존 Pod는 새로운 Pod가 준비된 후 삭제된다.
 - 즉, service를 통해 pod로 요청하는 사용자 입장에서는 중단이 발생하지 않는다.
     - Readinss 설정 후 siege로 지속적인 접속 테스트시 재배포
@@ -772,7 +772,7 @@ cd ..
     - 9090포트로 통신할 수 없어 계속해서 재시작 하는 모습을 볼 수 있다.
     - liveness를 사용하지 않는다면, 9090포트가 비정상적으로 작동해도 계속해서 Running 상태이다.
 
-- 현제 프로젝트에서는 8080 포트를 사용하므로 deployment에 8080포트에 대한 liveness 설정을 추가한다.
+- 본 프로젝트에서는 8080 포트를 사용하므로 deployment에 8080포트에 대한 liveness 설정을 추가한다.
     ```yaml
       livenessProbe:
         httpGet:
